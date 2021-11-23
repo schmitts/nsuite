@@ -1,0 +1,87 @@
+name: Arbor
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    name: "Default"
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      matrix:
+        config:
+        - {
+            name:  "Linux Max GCC",
+            os:    "ubuntu-20.04",
+            cc:    "gcc-10",
+            cxx:   "g++-10",
+            py:    "3.8",
+            cmake: "3.19.x"
+          }
+    env:
+        CC:         ${{ matrix.config.cc }}
+        CXX:        ${{ matrix.config.cxx }}
+        # We set PYTHONPATH instead of installing arbor to avoid distribution/OS specific behaviour.
+        PYTHONPATH: ${{ github.workspace }}/build/python
+        # This is a workaround for the unfortunate interaction of MacOS and OpenMPI 4
+        # See https://github.com/open-mpi/ompi/issues/6518
+        OMPI_MCA_btl: "self,tcp"
+    steps:
+      - name: Set up cmake
+        uses: jwlawson/actions-setup-cmake@v1.7
+        with:
+          cmake-version: ${{ matrix.config.cmake }}
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.config.py }}
+      - name: OpenMPI cache
+        uses: actions/cache@v2
+        id:   cache-ompi
+        with:
+          path: ~/openmpi-4.0.2
+          key:  ${{ matrix.config.os }}-openmpi-4.0.2-${{ matrix.config.cxx }}
+      - name: Build OpenMPI
+        if: ${{ steps.cache-ompi.outputs.cache-hit != 'true' }}
+        run: |
+           echo cache-hit='${{ steps.cache-ompi.outputs.cache-hit }}'
+           cd ~
+           wget https://download.open-mpi.org/release/open-mpi/v4.0/openmpi-4.0.2.tar.gz
+           tar -xvf ./openmpi-4.0.2.tar.gz
+           cd openmpi-4.0.2
+           ./configure --disable-mpi-fortran
+           make -j4
+      - name: Install OpenMPI
+        run: |
+           echo "Going to install ompi"
+           cd ~
+           cd openmpi-4.0.2
+           sudo make install
+           cd -
+      - name: Update shared library cache
+        if: ${{ startsWith(matrix.config.os, 'ubuntu') }}
+        run: sudo ldconfig
+      - name: Install Python packages
+        run:  pip install numpy mpi4py
+      - name: Clone w/ submodules
+        uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - name: Check config
+        run: |
+          $CC --version
+          $CXX --version
+          python --version
+          echo $PYTHONPATH
+      - name: Install
+        run: |
+          ./install-local.sh arbor neuron coreneuron || cat build/log*
+      - name: Run
+        run: |
+          ./run-bench.sh arbor neuron coreneuron --model="ring kway" --config=small
+      - name: Validation
+        run: |
+          ./run-validation.sh arbor neuron coreneuron
